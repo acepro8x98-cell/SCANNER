@@ -637,15 +637,60 @@ function checkSBDGrid(ctx, outW, outH) {
   return {
     ok: errorCols.length === 0,
     sbdString: sbdDigits.join(''),
-    errorCols
+    errorCols,
+    darkness
   };
+}
+
+// ============================================================
+// DEBUG: vẽ chấm màu tại từng điểm lấy mẫu để kiểm tra toạ độ có
+// đúng tâm ô tròn không (chỉ hiển thị trên preview, KHÔNG upload)
+// Bật/tắt bằng biến DEBUG_OMR bên dưới.
+// ============================================================
+const DEBUG_OMR = true;
+
+function drawDebugOverlay(sourceCanvas, gridDef, outW, outH, darkness) {
+  const debugCanvas = document.createElement('canvas');
+  debugCanvas.width = outW;
+  debugCanvas.height = outH;
+  const dctx = debugCanvas.getContext('2d');
+  dctx.drawImage(sourceCanvas, 0, 0);
+
+  const radius = Math.max(3, Math.round(outW * OMR_TEMPLATE.bubbleRadiusFrac));
+
+  gridDef.cols.forEach((fx, colIdx) => {
+    const px = fx * outW;
+    gridDef.rows.forEach((fy, rowIdx) => {
+      const py = fy * outH;
+      const d = darkness[colIdx][rowIdx];
+      const filled = d >= OMR_TEMPLATE.fillThreshold;
+      dctx.beginPath();
+      dctx.arc(px, py, radius, 0, Math.PI * 2);
+      dctx.strokeStyle = filled ? '#00ff00' : '#ff0000';
+      dctx.lineWidth = 2;
+      dctx.stroke();
+      // Ghi giá trị độ đậm (0-255) nhỏ bên cạnh để đọc số cụ thể
+      dctx.fillStyle = filled ? '#00ff00' : '#ff0000';
+      dctx.font = '9px sans-serif';
+      dctx.fillText(Math.round(d), px + radius + 1, py + 3);
+    });
+  });
+
+  return debugCanvas;
 }
 
 
 function showPreviewAndUpload(sbdCheck) {
-  const dataUrl = resultCanvas.toDataURL('image/jpeg', 0.92);
-  previewImg.src = dataUrl;
+  const dataUrl = resultCanvas.toDataURL('image/jpeg', 0.92); // ảnh SẠCH để upload
   previewBox.classList.remove('hidden');
+
+  if (DEBUG_OMR && sbdCheck && sbdCheck.darkness) {
+    // Hiển thị bản có chấm debug (không ảnh hưởng ảnh upload lên Drive)
+    const debugCanvas = drawDebugOverlay(resultCanvas, OMR_TEMPLATE.sbd, OUT_W, OUT_H, sbdCheck.darkness);
+    previewImg.src = debugCanvas.toDataURL('image/jpeg', 0.92);
+  } else {
+    previewImg.src = dataUrl;
+  }
 
   if (sbdCheck && !sbdCheck.ok) {
     // Số báo danh tô sai (thiếu hoặc thừa ô trong 1 cột nào đó) -> cảnh báo ngay,
