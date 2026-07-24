@@ -86,23 +86,47 @@ function resizeCanvases() {
 // Chờ OpenCV.js tải xong (script async trong index.html)
 // ============================================================
 let openCvWaitMs = 0;
+let openCvInitStarted = false;
+
 function waitForOpenCV() {
-  if (window.cv && cv.Mat) {
-    // Một số bản build cần chờ runtime init
-    if (cv.getBuildInformation) {
-      onOpenCVReady();
-    } else {
-      cv.onRuntimeInitialized = onOpenCVReady;
-    }
-  } else {
-    openCvWaitMs += 200;
-    setStatus(`Đang tải công cụ xử lý ảnh (opencv.js)... ${Math.round(openCvWaitMs / 1000)}s`);
-    if (openCvWaitMs > 25000) {
-      setStatus('⚠ Không tải được opencv.js sau 25s (kiểm tra lại mạng / file trên GitHub)', false);
-      return; // ngừng thử lại, tránh vòng lặp vô tận âm thầm
-    }
-    setTimeout(waitForOpenCV, 200);
+  if (typeof window.cv === 'undefined') {
+    pollAgain();
+    return;
   }
+
+  // Bản build "MODULARIZE" (như @techstark/opencv-js): window.cv là một PROMISE
+  // (không phải object dùng ngay được) — phải .then() để lấy công cụ OpenCV thật.
+  if (window.cv instanceof Promise) {
+    if (!openCvInitStarted) {
+      openCvInitStarted = true;
+      window.cv.then((resolvedCv) => {
+        window.cv = resolvedCv; // ghi đè lại biến cv để phần code còn lại dùng bình thường
+        onOpenCVReady();
+      }).catch((err) => {
+        setStatus('⚠ Lỗi khởi tạo opencv.js: ' + err.message, false);
+        console.error('opencv init error:', err);
+      });
+    }
+    return; // đang chờ Promise ở trên resolve, không cần poll thêm
+  }
+
+  // Bản build "thường" (docs.opencv.org gốc): cv là object có sẵn thuộc tính
+  if (cv.Mat) {
+    onOpenCVReady();
+  } else if (!openCvInitStarted) {
+    openCvInitStarted = true;
+    cv.onRuntimeInitialized = onOpenCVReady;
+  }
+}
+
+function pollAgain() {
+  openCvWaitMs += 200;
+  setStatus(`Đang tải công cụ xử lý ảnh (opencv.js)... ${Math.round(openCvWaitMs / 1000)}s`);
+  if (openCvWaitMs > 25000) {
+    setStatus('⚠ Không tải được opencv.js sau 25s (kiểm tra lại mạng / file trên GitHub)', false);
+    return; // ngừng thử lại, tránh vòng lặp vô tận âm thầm
+  }
+  setTimeout(waitForOpenCV, 200);
 }
 
 function onOpenCVReady() {
