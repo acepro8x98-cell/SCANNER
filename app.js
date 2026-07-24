@@ -85,6 +85,7 @@ function resizeCanvases() {
 // ============================================================
 // Chờ OpenCV.js tải xong (script async trong index.html)
 // ============================================================
+let openCvWaitMs = 0;
 function waitForOpenCV() {
   if (window.cv && cv.Mat) {
     // Một số bản build cần chờ runtime init
@@ -94,6 +95,11 @@ function waitForOpenCV() {
       cv.onRuntimeInitialized = onOpenCVReady;
     }
   } else {
+    openCvWaitMs += 200;
+    if (openCvWaitMs > 20000) {
+      setStatus('⚠ Không tải được opencv.js (kiểm tra lại file trên GitHub / mạng)', false);
+      return; // ngừng thử lại, tránh vòng lặp vô tận âm thầm
+    }
     setTimeout(waitForOpenCV, 200);
   }
 }
@@ -156,6 +162,11 @@ function processFrame() {
       const n = lastMarkerDebug.candidates.length;
       setStatus(`Đưa phiếu vào khung hình (thấy ${n} ô vuông)`, false);
     }
+  } catch (err) {
+    // QUAN TRỌNG: hiện lỗi thật ra màn hình thay vì để lỗi ẩn trong console
+    // (nếu không có dòng này, khi có lỗi JS thì trạng thái sẽ bị "đứng hình" mãi mãi)
+    setStatus('⚠ Lỗi xử lý: ' + err.message, false);
+    console.error('processFrame error:', err);
   } finally {
     // Giải phóng bộ nhớ OpenCV (bắt buộc, tránh rò rỉ)
     [src, gray, blurred, edge, dilated, contours, hierarchy].forEach(m => m && m.delete && m.delete());
