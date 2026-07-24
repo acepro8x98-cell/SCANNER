@@ -536,6 +536,15 @@ async function uploadToDrive(dataUrl) {
     if (result && result.success) {
       uploadStatusEl.textContent = '✔ Đã lưu vào Google Drive';
       uploadStatusEl.className = 'upload-status success';
+
+      // Tự động quay lại chế độ quét ngay sau khi lưu thành công,
+      // để chụp phiếu tiếp theo mà không cần bấm "Chụp lại"
+      setTimeout(() => {
+        previewBox.classList.add('hidden');
+        history = [];
+        lockedUntil = 0;
+        setStatus('Đưa phiếu vào khung hình', false);
+      }, 400); // để 0.4s cho kịp thấy dấu ✔ rồi quay lại ngay
     } else {
       throw new Error((result && result.error) || 'Không rõ lỗi');
     }
