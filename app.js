@@ -51,6 +51,7 @@ let autoCaptureEnabled = true;
 let lockedUntil = 0;         // thời điểm hết khoá sau khi chụp
 let loopTimer = null;
 let isBusy = false;
+let lastMarkerDebug = { candidates: [] }; // để hiển thị debug: các ô vuông đang "nhìn thấy"
 
 // ============================================================
 // BƯỚC 1-3: MỞ CAMERA
@@ -146,13 +147,14 @@ function processFrame() {
 
     if (quad) {
       lastQuadProc = quad;
-      drawOverlay(quad);
+      drawOverlay(quad, true);
       trackStability(quad);
     } else {
       lastQuadProc = null;
-      clearOverlay();
+      drawOverlay(null, false); // vẫn vẽ các chấm vàng debug (ô vuông đã thấy nhưng chưa đủ 4)
       history = [];
-      setStatus('Đưa phiếu vào khung hình', false);
+      const n = lastMarkerDebug.candidates.length;
+      setStatus(`Đưa phiếu vào khung hình (thấy ${n} ô vuông)`, false);
     }
   } finally {
     // Giải phóng bộ nhớ OpenCV (bắt buộc, tránh rò rỉ)
@@ -202,13 +204,17 @@ function findMarkerQuad(gray, frameArea) {
       cnt.delete();
     }
 
-    if (candidates.length < 4) return null;
+    if (candidates.length < 4) {
+      lastMarkerDebug.candidates = candidates;
+      return null;
+    }
 
     // Loại bỏ nhiễu: chỉ giữ các khối có kích thước gần với kích thước phổ biến nhất
     const sizes = candidates.map(c => c.size).sort((a, b) => a - b);
     const medianSize = sizes[Math.floor(sizes.length / 2)];
     const filtered = candidates.filter(c => c.size > medianSize * 0.4 && c.size < medianSize * 2.5);
     const pool = filtered.length >= 4 ? filtered : candidates;
+    lastMarkerDebug.candidates = pool;
 
     // 4 ô vuông góc luôn là các điểm CỰC TRỊ (trên-trái, trên-phải, dưới-phải, dưới-trái)
     const ordered = orderPoints(pool);
@@ -301,8 +307,21 @@ function dist(a, b) {
 // ============================================================
 // BƯỚC 19: VẼ KHUNG XANH LÊN OVERLAY (đổi toạ độ proc -> hiển thị)
 // ============================================================
-function drawOverlay(quadProc) {
+function drawOverlay(quadProc, locked) {
   clearOverlay();
+
+  // Vẽ chấm VÀNG debug tại các ô vuông ứng viên đã tìm thấy (để biết thuật toán đang "nhìn" thấy gì)
+  lastMarkerDebug.candidates.forEach(c => {
+    const p = procToOverlay(c);
+    overlayCtx.beginPath();
+    overlayCtx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+    overlayCtx.strokeStyle = '#facc15';
+    overlayCtx.lineWidth = 3;
+    overlayCtx.stroke();
+  });
+
+  if (!quadProc) return;
+
   const pts = quadProc.map(p => procToOverlay(p));
 
   overlayCtx.beginPath();
