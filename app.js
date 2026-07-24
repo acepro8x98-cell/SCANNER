@@ -484,6 +484,17 @@ function warpAndShow(fullCanvas, quadFull) {
   }
 }
 
+// Một số trình duyệt (đặc biệt trên điện thoại) chặn phát âm thanh
+// cho tới khi có cử chỉ chạm đầu tiên của người dùng -> "mở khoá" ở đây
+function unlockAudioOnce() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  document.removeEventListener('touchstart', unlockAudioOnce);
+  document.removeEventListener('click', unlockAudioOnce);
+}
+document.addEventListener('touchstart', unlockAudioOnce, { once: true });
+document.addEventListener('click', unlockAudioOnce, { once: true });
+
 // Nút chụp thủ công
 captureBtn.addEventListener('click', () => {
   if (lastQuadProc) {
@@ -505,6 +516,41 @@ retakeBtn.addEventListener('click', () => {
   lockedUntil = 0;
   setStatus('Đưa phiếu vào khung hình', false);
 });
+
+// ============================================================
+// ÂM THANH PHẢN HỒI (giống máy quét mã vạch siêu thị)
+// ============================================================
+let audioCtx = null;
+
+function playBeep(freq = 1200, durationMs = 120) {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.value = 0.25; // âm lượng vừa phải, tránh giật mình
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + durationMs / 1000);
+  } catch (err) {
+    console.warn('Không phát được âm thanh:', err.message);
+  }
+}
+
+// "Tít" 1 tiếng ngắn, cao -> quét/lưu THÀNH CÔNG
+function feedbackSuccess() {
+  playBeep(1400, 100);
+  if (navigator.vibrate) navigator.vibrate(60); // rung nhẹ 1 lần
+}
+
+// "Tè tè" 2 tiếng liên tiếp, trầm hơn -> CẢNH BÁO cần dừng kiểm tra
+function feedbackWarning() {
+  playBeep(500, 150);
+  setTimeout(() => playBeep(500, 150), 200);
+  if (navigator.vibrate) navigator.vibrate([120, 80, 120]); // rung 2 nhịp dài
+}
 
 // ============================================================
 // BƯỚC 7: HIỂN THỊ PREVIEW + GỬI ẢNH LÊN GOOGLE APPS SCRIPT
@@ -536,6 +582,7 @@ async function uploadToDrive(dataUrl) {
     if (result && result.success) {
       uploadStatusEl.textContent = '✔ Đã lưu vào Google Drive';
       uploadStatusEl.className = 'upload-status success';
+      feedbackSuccess(); // "Tít" + rung nhẹ báo thành công
 
       // Tự động quay lại chế độ quét ngay sau khi lưu thành công,
       // để chụp phiếu tiếp theo mà không cần bấm "Chụp lại"
