@@ -477,7 +477,11 @@ function warpAndShow(fullCanvas, quadFull) {
     resultCanvas.height = OUT_H;
     cv.imshow(resultCanvas, dst);
 
-    showPreviewAndUpload();
+    // Kiểm tra ngay khối Số báo danh trên ảnh vừa duỗi thẳng
+    const ctx2d = resultCanvas.getContext('2d');
+    const sbdCheck = checkSBDGrid(ctx2d, OUT_W, OUT_H);
+
+    showPreviewAndUpload(sbdCheck);
   } finally {
     [src, dst, M, srcTri, dstTri].forEach(m => m && m.delete && m.delete());
     isBusy = false;
@@ -553,21 +557,116 @@ function feedbackWarning() {
 }
 
 // ============================================================
-// BƯỚC 7: HIỂN THỊ PREVIEW + GỬI ẢNH LÊN GOOGLE APPS SCRIPT
+// TOẠ ĐỘ CÁC Ô TRÒN TRÊN PHIẾU (đo từ file mẫu 132.docx, tính theo
+// tỉ lệ % so với khung ảnh đã duỗi thẳng - khớp với 4 marker góc,
+// nên áp dụng đúng cho MỌI kích thước OUT_W/OUT_H)
 // ============================================================
-function showPreviewAndUpload() {
+const OMR_TEMPLATE = {
+  // Số báo danh: 6 cột (mỗi cột 1 chữ số), 10 hàng (chữ số 0-9)
+  sbd: {
+    cols: [0.69048, 0.71998, 0.75000, 0.77981, 0.80962, 0.83944],
+    rows: [0.03675, 0.05652, 0.07628, 0.09605, 0.11581, 0.13551, 0.15541, 0.17538, 0.19515, 0.21491]
+  },
+  // Mã đề: 3 cột, 10 hàng (dùng chung hàng với Số báo danh)
+  made: {
+    cols: [0.91768, 0.94749, 0.97720],
+    rows: [0.03675, 0.05652, 0.07628, 0.09605, 0.11581, 0.13551, 0.15541, 0.17538, 0.19515, 0.21491]
+  },
+  // Phần I trắc nghiệm: 4 cột (A/B/C/D), 20 hàng (câu 1-20)
+  phan1: {
+    cols: [0.06841, 0.11872, 0.16904, 0.21925],
+    rows: [0.30874, 0.32968, 0.35069, 0.37184, 0.39300, 0.41401, 0.43495, 0.45596, 0.47691, 0.49792,
+           0.54362, 0.56456, 0.58571, 0.60693, 0.62788, 0.64889, 0.66990, 0.69092, 0.71179, 0.73280]
+  },
+  bubbleRadiusFrac: 0.007, // bán kính lấy mẫu (tính theo % chiều rộng OUT_W), nhỏ hơn ô thật để không dính viền
+  fillThreshold: 90        // độ tối trung bình (0=trắng, 255=đen) để coi là "đã tô"
+};
+
+// Đo độ tối trung bình của một vùng nhỏ quanh tâm ô tròn (0 = trắng, 255 = đen tuyệt đối)
+function sampleBubbleDarkness(ctx, cx, cy, radius) {
+  const size = radius * 2;
+  const x0 = Math.max(0, Math.round(cx - radius));
+  const y0 = Math.max(0, Math.round(cy - radius));
+  const imgData = ctx.getImageData(x0, y0, size, size);
+  let sum = 0, count = 0;
+  for (let i = 0; i < imgData.data.length; i += 4) {
+    const gray = (imgData.data[i] + imgData.data[i + 1] + imgData.data[i + 2]) / 3;
+    sum += (255 - gray);
+    count++;
+  }
+  return count > 0 ? sum / count : 0;
+}
+
+// Đọc độ tối của toàn bộ 1 khối lưới (vd: sbd, made, phan1)
+// Trả về mảng 2 chiều: darkness[colIndex][rowIndex]
+function readGridDarkness(ctx, gridDef, outW, outH) {
+  const radius = Math.max(3, Math.round(outW * OMR_TEMPLATE.bubbleRadiusFrac));
+  const darkness = [];
+  for (const fx of gridDef.cols) {
+    const colVals = [];
+    const px = fx * outW;
+    for (const fy of gridDef.rows) {
+      const py = fy * outH;
+      colVals.push(sampleBubbleDarkness(ctx, px, py, radius));
+    }
+    darkness.push(colVals);
+  }
+  return darkness;
+}
+
+// Kiểm tra khối Số báo danh: mỗi cột (6 cột) phải có ĐÚNG 1 ô được tô.
+// Trả về { ok: boolean, sbdString: string|null, errorCols: number[] }
+function checkSBDGrid(ctx, outW, outH) {
+  const darkness = readGridDarkness(ctx, OMR_TEMPLATE.sbd, outW, outH);
+  const errorCols = [];
+  let sbdDigits = [];
+
+  darkness.forEach((colVals, colIdx) => {
+    const filledRows = [];
+    colVals.forEach((d, rowIdx) => {
+      if (d >= OMR_TEMPLATE.fillThreshold) filledRows.push(rowIdx);
+    });
+    if (filledRows.length !== 1) {
+      errorCols.push(colIdx + 1); // lưu số thứ tự cột (1-6) cho dễ đọc thông báo
+      sbdDigits.push('?');
+    } else {
+      sbdDigits.push(String(filledRows[0])); // filledRows[0] chính là chữ số 0-9
+    }
+  });
+
+  return {
+    ok: errorCols.length === 0,
+    sbdString: sbdDigits.join(''),
+    errorCols
+  };
+}
+
+
+function showPreviewAndUpload(sbdCheck) {
   const dataUrl = resultCanvas.toDataURL('image/jpeg', 0.92);
   previewImg.src = dataUrl;
   previewBox.classList.remove('hidden');
-  uploadStatusEl.textContent = 'Đang tải lên Google Drive...';
-  uploadStatusEl.className = 'upload-status';
 
-  uploadToDrive(dataUrl);
+  if (sbdCheck && !sbdCheck.ok) {
+    // Số báo danh tô sai (thiếu hoặc thừa ô trong 1 cột nào đó) -> cảnh báo ngay,
+    // không chờ upload xong, để người dùng dừng lại kiểm tra ngay lập tức
+    uploadStatusEl.textContent =
+      '⚠ Số báo danh tô sai ở cột: ' + sbdCheck.errorCols.join(', ') +
+      ' (mỗi cột phải tô đúng 1 ô) — Đang tải lên...';
+    uploadStatusEl.className = 'upload-status error';
+    feedbackWarning(); // "Tè tè" + rung cảnh báo
+  } else {
+    uploadStatusEl.textContent = 'Đang tải lên Google Drive...';
+    uploadStatusEl.className = 'upload-status';
+  }
+
+  uploadToDrive(dataUrl, sbdCheck);
 }
 
-async function uploadToDrive(dataUrl) {
+async function uploadToDrive(dataUrl, sbdCheck) {
   const base64 = dataUrl.split(',')[1];
   const filename = 'phieu_' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
+  const sbdError = sbdCheck && !sbdCheck.ok;
 
   try {
     const res = await fetch(WEBAPP_URL, {
@@ -580,6 +679,16 @@ async function uploadToDrive(dataUrl) {
 
     const result = await res.json();
     if (result && result.success) {
+      if (sbdError) {
+        // Vẫn lưu ảnh (không mất dữ liệu), nhưng GIỮ màn hình preview để
+        // người dùng biết mà kiểm tra lại phiếu này -> không tự động chuyển bài
+        uploadStatusEl.textContent =
+          '⚠ Đã lưu ảnh, nhưng Số báo danh lỗi ở cột: ' + sbdCheck.errorCols.join(', ') +
+          '. Hãy kiểm tra lại phiếu giấy rồi bấm "Chụp lại" nếu cần.';
+        uploadStatusEl.className = 'upload-status error';
+        return; // dừng ở đây, không auto-advance
+      }
+
       uploadStatusEl.textContent = '✔ Đã lưu vào Google Drive';
       uploadStatusEl.className = 'upload-status success';
       feedbackSuccess(); // "Tít" + rung nhẹ báo thành công
