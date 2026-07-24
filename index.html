@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>OMR Scanner - Chụp phiếu</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Video hiển thị camera trực tiếp -->
+  <video id="video" autoplay playsinline muted></video>
+
+  <!-- Canvas vẽ khung xanh đè lên video (cùng kích thước với video) -->
+  <canvas id="overlay"></canvas>
+
+  <!-- Canvas ẩn dùng để xử lý ảnh (OpenCV đọc từ đây) -->
+  <canvas id="canvas" style="display:none"></canvas>
+
+  <!-- Canvas ẩn chứa ảnh phiếu sau khi đã "duỗi thẳng" (warpPerspective) -->
+  <canvas id="result" style="display:none"></canvas>
+
+  <!-- Thanh trạng thái phía trên -->
+  <div id="status" class="status">Đang khởi động camera...</div>
+
+  <!-- Nút điều khiển phía dưới -->
+  <div class="controls">
+    <button id="autoToggle" class="btn btn-secondary">Tự động: BẬT</button>
+    <button id="capture" class="btn btn-primary">📷 CHỤP</button>
+  </div>
+
+  <!-- Lớp hiển thị ảnh vừa chụp + trạng thái tải lên -->
+  <div id="preview" class="preview hidden">
+    <img id="previewImg" src="" alt="Ảnh phiếu vừa chụp">
+    <div id="uploadStatus" class="upload-status">Đang tải lên Google Drive...</div>
+    <button id="retake" class="btn btn-secondary">Chụp lại</button>
+  </div>
+
+  <!-- OpenCV.js chạy offline (file local trong dự án, không cần CDN) -->
+  <script async src="opencv.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

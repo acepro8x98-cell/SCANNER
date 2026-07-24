@@ -1,0 +1,405 @@
+/* ============================================================
+   OMR SCANNER - app.js
+   Quy trình: Camera -> OpenCV (Gray/Blur/Canny/Contours) ->
+   Tìm 4 góc phiếu -> Kiểm tra ổn định -> Warp Perspective ->
+   Upload (base64) lên Google Apps Script -> Google Drive
+   ============================================================ */
+
+// ---------- Phần tử DOM ----------
+const video       = document.getElementById('video');
+const overlay     = document.getElementById('overlay');
+const canvas      = document.getElementById('canvas');   // canvas xử lý (độ phân giải nhỏ)
+const resultCanvas= document.getElementById('result');    // canvas ảnh sau khi duỗi thẳng
+const statusEl    = document.getElementById('status');
+const captureBtn  = document.getElementById('capture');
+const autoBtn     = document.getElementById('autoToggle');
+const previewBox  = document.getElementById('preview');
+const previewImg  = document.getElementById('previewImg');
+const uploadStatusEl = document.getElementById('uploadStatus');
+const retakeBtn   = document.getElementById('retake');
+
+const overlayCtx = overlay.getContext('2d');
+
+// ---------- Cấu hình thuật toán ----------
+const PROC_WIDTH        = 480;   // độ rộng ảnh xử lý (càng nhỏ càng nhanh)
+const PROCESS_INTERVAL  = 90;    // ms giữa các lần xử lý (~11 khung hình/giây)
+const MIN_AREA_RATIO    = 0.15;  // phiếu phải chiếm tối thiểu 15% diện tích khung hình
+const ASPECT_TARGETS    = [210/297, 297/210]; // A4 dọc và ngang
+const ASPECT_TOLERANCE  = 0.18;
+const STABLE_WINDOW_MS  = 600;   // thời gian phải đứng yên trước khi tự chụp
+const STABLE_PIXEL_TOL  = 6;     // sai lệch tối đa (px, ở độ phân giải xử lý) giữa các khung
+const CAPTURE_COOLDOWN  = 2500;  // ms khoá lại sau khi vừa chụp, tránh chụp liên tục
+const OUT_W = 1240, OUT_H = 1754; // kích thước ảnh xuất ra (~A4 150dpi)
+
+// ---------- Biến trạng thái ----------
+let cvReady = false;
+let procCanvas = document.createElement('canvas');
+let procCtx = procCanvas.getContext('2d');
+let lastQuadProc = null;     // góc phiếu mới nhất (toạ độ hệ xử lý)
+let history = [];            // lịch sử {t, pts} để kiểm tra ổn định
+let autoCaptureEnabled = true;
+let lockedUntil = 0;         // thời điểm hết khoá sau khi chụp
+let loopTimer = null;
+let isBusy = false;
+
+// ============================================================
+// BƯỚC 1-3: MỞ CAMERA
+// ============================================================
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    resizeCanvases();
+    window.addEventListener('resize', resizeCanvases);
+    setStatus('Đang tìm phiếu...');
+    waitForOpenCV();
+  } catch (err) {
+    setStatus('Không mở được camera: ' + err.message);
+  }
+}
+
+function resizeCanvases() {
+  overlay.width  = window.innerWidth;
+  overlay.height = window.innerHeight;
+
+  const scale = PROC_WIDTH / video.videoWidth;
+  procCanvas.width  = PROC_WIDTH;
+  procCanvas.height = Math.round(video.videoHeight * scale);
+}
+
+// ============================================================
+// Chờ OpenCV.js tải xong (script async trong index.html)
+// ============================================================
+function waitForOpenCV() {
+  if (window.cv && cv.Mat) {
+    // Một số bản build cần chờ runtime init
+    if (cv.getBuildInformation) {
+      onOpenCVReady();
+    } else {
+      cv.onRuntimeInitialized = onOpenCVReady;
+    }
+  } else {
+    setTimeout(waitForOpenCV, 200);
+  }
+}
+
+function onOpenCVReady() {
+  cvReady = true;
+  setStatus('Đưa phiếu vào khung hình');
+  loopTimer = setInterval(processFrame, PROCESS_INTERVAL);
+}
+
+// ============================================================
+// BƯỚC 6, 11-19: XỬ LÝ TỪNG KHUNG HÌNH
+// Gray -> Blur -> Canny -> FindContours -> Polygon 4 góc -> Kiểm tra tỉ lệ
+// ============================================================
+function processFrame() {
+  if (!cvReady || isBusy || video.readyState < 2) return;
+  if (Date.now() < lockedUntil) return; // đang trong thời gian khoá sau khi chụp
+
+  procCtx.drawImage(video, 0, 0, procCanvas.width, procCanvas.height);
+
+  let src, gray, blurred, edge, dilated, contours, hierarchy;
+  try {
+    src = cv.imread(procCanvas);
+    gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    blurred = new cv.Mat();
+    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+
+    edge = new cv.Mat();
+    cv.Canny(blurred, edge, 60, 180);
+
+    // Giãn nhẹ để nối các đoạn cạnh bị đứt
+    dilated = new cv.Mat();
+    const kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+    cv.dilate(edge, dilated, kernel);
+    kernel.delete();
+
+    contours = new cv.MatVector();
+    hierarchy = new cv.Mat();
+    cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    const quad = findBestQuad(contours, procCanvas.width * procCanvas.height);
+
+    if (quad) {
+      lastQuadProc = quad;
+      drawOverlay(quad);
+      trackStability(quad);
+    } else {
+      lastQuadProc = null;
+      clearOverlay();
+      history = [];
+      setStatus('Đưa phiếu vào khung hình', false);
+    }
+  } finally {
+    // Giải phóng bộ nhớ OpenCV (bắt buộc, tránh rò rỉ)
+    [src, gray, blurred, edge, dilated, contours, hierarchy].forEach(m => m && m.delete && m.delete());
+  }
+}
+
+// BƯỚC 16-18: chọn contour lớn nhất, xấp xỉ 4 góc, kiểm tra diện tích + tỉ lệ
+function findBestQuad(contours, frameArea) {
+  let best = null;
+  let bestArea = 0;
+
+  for (let i = 0; i < contours.size(); i++) {
+    const cnt = contours.get(i);
+    const area = cv.contourArea(cnt);
+
+    if (area > bestArea && area > frameArea * MIN_AREA_RATIO) {
+      const peri = cv.arcLength(cnt, true);
+      const approx = new cv.Mat();
+      cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+
+      if (approx.rows === 4 && cv.isContourConvex(approx)) {
+        const pts = matToPoints(approx);
+        const ordered = orderPoints(pts);
+        if (aspectRatioOk(ordered)) {
+          bestArea = area;
+          best = ordered;
+        }
+      }
+      approx.delete();
+    }
+    cnt.delete();
+  }
+  return best;
+}
+
+function matToPoints(mat) {
+  const data = mat.data32S;
+  const pts = [];
+  for (let i = 0; i < data.length; i += 2) {
+    pts.push({ x: data[i], y: data[i + 1] });
+  }
+  return pts;
+}
+
+// Sắp xếp 4 điểm theo thứ tự: trên-trái, trên-phải, dưới-phải, dưới-trái
+function orderPoints(pts) {
+  const sum = pts.map(p => p.x + p.y);
+  const diff = pts.map(p => p.y - p.x);
+  const tl = pts[sum.indexOf(Math.min(...sum))];
+  const br = pts[sum.indexOf(Math.max(...sum))];
+  const tr = pts[diff.indexOf(Math.min(...diff))];
+  const bl = pts[diff.indexOf(Math.max(...diff))];
+  return [tl, tr, br, bl];
+}
+
+// BƯỚC 18: kiểm tra tỉ lệ khung gần với A4 (0.707) ở cả 2 chiều
+function aspectRatioOk([tl, tr, br, bl]) {
+  const widthTop    = dist(tl, tr);
+  const widthBottom  = dist(bl, br);
+  const heightLeft   = dist(tl, bl);
+  const heightRight  = dist(tr, br);
+  const w = (widthTop + widthBottom) / 2;
+  const h = (heightLeft + heightRight) / 2;
+  if (w < 10 || h < 10) return false;
+  const ratio = w / h;
+  return ASPECT_TARGETS.some(t => Math.abs(ratio - t) < t * ASPECT_TOLERANCE);
+}
+
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+// ============================================================
+// BƯỚC 19: VẼ KHUNG XANH LÊN OVERLAY (đổi toạ độ proc -> hiển thị)
+// ============================================================
+function drawOverlay(quadProc) {
+  clearOverlay();
+  const pts = quadProc.map(p => procToOverlay(p));
+
+  overlayCtx.beginPath();
+  overlayCtx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) overlayCtx.lineTo(pts[i].x, pts[i].y);
+  overlayCtx.closePath();
+  overlayCtx.strokeStyle = '#22c55e';
+  overlayCtx.lineWidth = 4;
+  overlayCtx.stroke();
+
+  pts.forEach(p => {
+    overlayCtx.beginPath();
+    overlayCtx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+    overlayCtx.fillStyle = '#22c55e';
+    overlayCtx.fill();
+  });
+}
+
+function clearOverlay() {
+  overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+}
+
+// Video hiển thị bằng object-fit:cover -> phải quy đổi toạ độ đúng cách
+function procToOverlay(p) {
+  const scaleProcToVideo = video.videoWidth / procCanvas.width;
+  const videoX = p.x * scaleProcToVideo;
+  const videoY = p.y * scaleProcToVideo;
+
+  const coverScale = Math.max(overlay.width / video.videoWidth, overlay.height / video.videoHeight);
+  const offsetX = (overlay.width  - video.videoWidth  * coverScale) / 2;
+  const offsetY = (overlay.height - video.videoHeight * coverScale) / 2;
+
+  return {
+    x: videoX * coverScale + offsetX,
+    y: videoY * coverScale + offsetY
+  };
+}
+
+// ============================================================
+// BƯỚC 20: KIỂM TRA ĐỘ ỔN ĐỊNH (chống rung tay)
+// ============================================================
+function trackStability(quad) {
+  const now = Date.now();
+  history.push({ t: now, pts: quad });
+  history = history.filter(h => now - h.t <= STABLE_WINDOW_MS);
+
+  if (history.length < 3) {
+    setStatus('Đang căn chỉnh...', false);
+    return;
+  }
+
+  const first = history[0].pts;
+  const last = history[history.length - 1].pts;
+  const maxMove = Math.max(...first.map((p, i) => dist(p, last[i])));
+  const longEnough = (last === history[history.length-1].pts) && (now - history[0].t >= STABLE_WINDOW_MS * 0.8);
+
+  if (maxMove <= STABLE_PIXEL_TOL && longEnough) {
+    setStatus('✔ Đã ổn định', true);
+    if (autoCaptureEnabled && Date.now() >= lockedUntil) {
+      triggerCapture();
+    }
+  } else {
+    setStatus('Giữ yên máy...', false);
+  }
+}
+
+function setStatus(text, locked) {
+  statusEl.textContent = text;
+  statusEl.classList.toggle('locked', !!locked);
+}
+
+// ============================================================
+// BƯỚC 5-onward: CHỤP + WARP PERSPECTIVE (duỗi thẳng phiếu)
+// ============================================================
+function triggerCapture() {
+  if (isBusy) return;
+  if (!lastQuadProc) {
+    alert('Chưa nhận diện được phiếu. Hãy đưa phiếu vào giữa khung hình.');
+    return;
+  }
+  isBusy = true;
+  lockedUntil = Date.now() + CAPTURE_COOLDOWN;
+
+  // Chụp ở ĐỘ PHÂN GIẢI GỐC của camera để ảnh nét, không dùng canvas nhỏ đã xử lý
+  const fullCanvas = document.createElement('canvas');
+  fullCanvas.width = video.videoWidth;
+  fullCanvas.height = video.videoHeight;
+  fullCanvas.getContext('2d').drawImage(video, 0, 0);
+
+  // Quy đổi 4 góc từ toạ độ xử lý (proc) sang toạ độ độ phân giải gốc
+  const scaleProcToVideo = video.videoWidth / procCanvas.width;
+  const quadFull = lastQuadProc.map(p => ({ x: p.x * scaleProcToVideo, y: p.y * scaleProcToVideo }));
+
+  warpAndShow(fullCanvas, quadFull);
+}
+
+function warpAndShow(fullCanvas, quadFull) {
+  let src, dst, M, srcTri, dstTri;
+  try {
+    src = cv.imread(fullCanvas);
+    dst = new cv.Mat();
+
+    srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      quadFull[0].x, quadFull[0].y,
+      quadFull[1].x, quadFull[1].y,
+      quadFull[2].x, quadFull[2].y,
+      quadFull[3].x, quadFull[3].y
+    ]);
+    dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      0, 0,  OUT_W, 0,  OUT_W, OUT_H,  0, OUT_H
+    ]);
+
+    M = cv.getPerspectiveTransform(srcTri, dstTri);
+    cv.warpPerspective(src, dst, M, new cv.Size(OUT_W, OUT_H));
+
+    resultCanvas.width = OUT_W;
+    resultCanvas.height = OUT_H;
+    cv.imshow(resultCanvas, dst);
+
+    showPreviewAndUpload();
+  } finally {
+    [src, dst, M, srcTri, dstTri].forEach(m => m && m.delete && m.delete());
+    isBusy = false;
+  }
+}
+
+// Nút chụp thủ công
+captureBtn.addEventListener('click', () => {
+  if (lastQuadProc) {
+    triggerCapture();
+  } else {
+    // Không có khung nhận diện -> vẫn cho chụp nguyên khung hình để người dùng tự xử lý
+    alert('Chưa thấy phiếu rõ nét. Hãy chỉnh lại góc chụp rồi thử lại.');
+  }
+});
+
+autoBtn.addEventListener('click', () => {
+  autoCaptureEnabled = !autoCaptureEnabled;
+  autoBtn.textContent = 'Tự động: ' + (autoCaptureEnabled ? 'BẬT' : 'TẮT');
+});
+
+retakeBtn.addEventListener('click', () => {
+  previewBox.classList.add('hidden');
+  history = [];
+  lockedUntil = 0;
+  setStatus('Đưa phiếu vào khung hình', false);
+});
+
+// ============================================================
+// BƯỚC 7: HIỂN THỊ PREVIEW + GỬI ẢNH LÊN GOOGLE APPS SCRIPT
+// ============================================================
+function showPreviewAndUpload() {
+  const dataUrl = resultCanvas.toDataURL('image/jpeg', 0.92);
+  previewImg.src = dataUrl;
+  previewBox.classList.remove('hidden');
+  uploadStatusEl.textContent = 'Đang tải lên Google Drive...';
+  uploadStatusEl.className = 'upload-status';
+
+  uploadToDrive(dataUrl);
+}
+
+async function uploadToDrive(dataUrl) {
+  const base64 = dataUrl.split(',')[1];
+  const filename = 'phieu_' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
+
+  try {
+    const res = await fetch(WEBAPP_URL, {
+      method: 'POST',
+      // Dùng text/plain để tránh trình duyệt gửi preflight OPTIONS
+      // (Apps Script Web App không xử lý OPTIONS mặc định)
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ filename, mimeType: 'image/jpeg', data: base64 })
+    });
+
+    const result = await res.json();
+    if (result && result.success) {
+      uploadStatusEl.textContent = '✔ Đã lưu vào Google Drive';
+      uploadStatusEl.className = 'upload-status success';
+    } else {
+      throw new Error((result && result.error) || 'Không rõ lỗi');
+    }
+  } catch (err) {
+    uploadStatusEl.textContent = '✖ Lỗi tải lên: ' + err.message;
+    uploadStatusEl.className = 'upload-status error';
+  }
+}
+
+// ---------- Khởi động ----------
+startCamera();
