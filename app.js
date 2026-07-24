@@ -66,7 +66,7 @@ async function startCamera() {
     await video.play();
     resizeCanvases();
     window.addEventListener('resize', resizeCanvases);
-    setStatus('Đang tìm phiếu...');
+    setStatus('Đang tải công cụ xử lý ảnh (opencv.js)... 0s');
     waitForOpenCV();
   } catch (err) {
     setStatus('Không mở được camera: ' + err.message);
@@ -96,8 +96,9 @@ function waitForOpenCV() {
     }
   } else {
     openCvWaitMs += 200;
-    if (openCvWaitMs > 20000) {
-      setStatus('⚠ Không tải được opencv.js (kiểm tra lại file trên GitHub / mạng)', false);
+    setStatus(`Đang tải công cụ xử lý ảnh (opencv.js)... ${Math.round(openCvWaitMs / 1000)}s`);
+    if (openCvWaitMs > 25000) {
+      setStatus('⚠ Không tải được opencv.js sau 25s (kiểm tra lại mạng / file trên GitHub)', false);
       return; // ngừng thử lại, tránh vòng lặp vô tận âm thầm
     }
     setTimeout(waitForOpenCV, 200);
