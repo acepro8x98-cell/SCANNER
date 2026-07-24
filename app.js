@@ -1,7 +1,8 @@
 /* ============================================================
    OMR SCANNER - app.js
-   Quy trình: Camera -> OpenCV (Gray/Blur/Canny/Contours) ->
-   Tìm 4 góc phiếu -> Kiểm tra ổn định -> Warp Perspective ->
+   Quy trình: Camera -> OpenCV ->
+   Tìm 4 ô vuông đen ở góc phiếu (ưu tiên) hoặc dò viền tờ giấy
+   (dự phòng) -> Kiểm tra ổn định -> Warp Perspective ->
    Upload (base64) lên Google Apps Script -> Google Drive
    ============================================================ */
 
@@ -21,15 +22,24 @@ const retakeBtn   = document.getElementById('retake');
 const overlayCtx = overlay.getContext('2d');
 
 // ---------- Cấu hình thuật toán ----------
-const PROC_WIDTH        = 480;   // độ rộng ảnh xử lý (càng nhỏ càng nhanh)
+const PROC_WIDTH        = 640;   // độ rộng ảnh xử lý (tăng lên để 4 ô vuông góc đủ lớn để nhận ra)
 const PROCESS_INTERVAL  = 90;    // ms giữa các lần xử lý (~11 khung hình/giây)
-const MIN_AREA_RATIO    = 0.15;  // phiếu phải chiếm tối thiểu 15% diện tích khung hình
+const MIN_AREA_RATIO    = 0.10;  // phiếu phải chiếm tối thiểu 10% diện tích khung hình
 const ASPECT_TARGETS    = [210/297, 297/210]; // A4 dọc và ngang
-const ASPECT_TOLERANCE  = 0.18;
+const ASPECT_TOLERANCE  = 0.22;
 const STABLE_WINDOW_MS  = 600;   // thời gian phải đứng yên trước khi tự chụp
-const STABLE_PIXEL_TOL  = 6;     // sai lệch tối đa (px, ở độ phân giải xử lý) giữa các khung
+const STABLE_PIXEL_TOL  = 8;     // sai lệch tối đa (px, ở độ phân giải xử lý) giữa các khung
 const CAPTURE_COOLDOWN  = 2500;  // ms khoá lại sau khi vừa chụp, tránh chụp liên tục
 const OUT_W = 1240, OUT_H = 1754; // kích thước ảnh xuất ra (~A4 150dpi)
+
+// Cấu hình riêng cho nhận diện 4 Ô VUÔNG ĐEN Ở GÓC (marker) - phương pháp chính
+// Phiếu trả lời có in sẵn 4 ô vuông đen nhỏ ở 4 góc để căn chỉnh, đáng tin cậy
+// hơn nhiều so với việc dò viền cả tờ giấy (không bị ảnh hưởng bởi nền phía sau).
+const MARKER_MIN_SIDE_RATIO = 0.010; // cạnh ô vuông tối thiểu, tính theo % chiều rộng ảnh xử lý
+const MARKER_MAX_SIDE_RATIO = 0.10;  // cạnh ô vuông tối đa
+const MARKER_ASPECT_MIN     = 0.55;  // ô vuông thật sẽ có tỉ lệ cạnh gần 1:1
+const MARKER_ASPECT_MAX     = 1.8;
+const MARKER_MIN_EXTENT     = 0.80;  // độ "đặc" của khối - phân biệt ô vuông đặc với vòng tròn/chữ
 
 // ---------- Biến trạng thái ----------
 let cvReady = false;
@@ -103,29 +113,36 @@ function processFrame() {
 
   procCtx.drawImage(video, 0, 0, procCanvas.width, procCanvas.height);
 
+  const frameArea = procCanvas.width * procCanvas.height;
   let src, gray, blurred, edge, dilated, contours, hierarchy;
   try {
     src = cv.imread(procCanvas);
     gray = new cv.Mat();
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
-    blurred = new cv.Mat();
-    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+    // CÁCH 1 (ưu tiên): tìm 4 ô vuông đen in sẵn ở góc phiếu
+    let quad = findMarkerQuad(gray, frameArea);
 
-    edge = new cv.Mat();
-    cv.Canny(blurred, edge, 60, 180);
+    // CÁCH 2 (dự phòng): nếu không thấy đủ 4 ô vuông, quay lại dò viền cả tờ giấy
+    if (!quad) {
+      blurred = new cv.Mat();
+      cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
 
-    // Giãn nhẹ để nối các đoạn cạnh bị đứt
-    dilated = new cv.Mat();
-    const kernel = cv.Mat.ones(3, 3, cv.CV_8U);
-    cv.dilate(edge, dilated, kernel);
-    kernel.delete();
+      edge = new cv.Mat();
+      cv.Canny(blurred, edge, 60, 180);
 
-    contours = new cv.MatVector();
-    hierarchy = new cv.Mat();
-    cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      // Giãn nhẹ để nối các đoạn cạnh bị đứt
+      dilated = new cv.Mat();
+      const kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+      cv.dilate(edge, dilated, kernel);
+      kernel.delete();
 
-    const quad = findBestQuad(contours, procCanvas.width * procCanvas.height);
+      contours = new cv.MatVector();
+      hierarchy = new cv.Mat();
+      cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+      quad = findBestQuad(contours, frameArea);
+    }
 
     if (quad) {
       lastQuadProc = quad;
@@ -141,6 +158,78 @@ function processFrame() {
     // Giải phóng bộ nhớ OpenCV (bắt buộc, tránh rò rỉ)
     [src, gray, blurred, edge, dilated, contours, hierarchy].forEach(m => m && m.delete && m.delete());
   }
+}
+
+// ============================================================
+// PHƯƠNG PHÁP CHÍNH: tìm 4 ô vuông đen in sẵn ở góc phiếu
+// (đáng tin cậy hơn dò viền giấy vì tương phản đen/trắng rất mạnh,
+// không bị ảnh hưởng bởi hoa văn của mặt bàn/sàn nhà phía sau phiếu)
+// ============================================================
+function findMarkerQuad(gray, frameArea) {
+  let bin, contours, hierarchy;
+  try {
+    // Nhị phân hoá ảnh: vùng tối (chữ, ô vuông đen) -> trắng, còn lại -> đen
+    bin = new cv.Mat();
+    cv.threshold(gray, bin, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+
+    contours = new cv.MatVector();
+    hierarchy = new cv.Mat();
+    cv.findContours(bin, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+    const w = gray.cols;
+    const minSide = w * MARKER_MIN_SIDE_RATIO;
+    const maxSide = w * MARKER_MAX_SIDE_RATIO;
+
+    const candidates = [];
+    for (let i = 0; i < contours.size(); i++) {
+      const cnt = contours.get(i);
+      const rect = cv.boundingRect(cnt);
+      const area = cv.contourArea(cnt);
+      const boxArea = rect.width * rect.height;
+
+      if (rect.width >= minSide && rect.width <= maxSide &&
+          rect.height >= minSide && rect.height <= maxSide && boxArea > 0) {
+        const aspect = rect.width / rect.height;
+        const extent = area / boxArea; // độ "đặc": ô vuông tô đen đặc ~1.0, vòng tròn/chữ thấp hơn
+        if (aspect >= MARKER_ASPECT_MIN && aspect <= MARKER_ASPECT_MAX && extent >= MARKER_MIN_EXTENT) {
+          candidates.push({
+            x: rect.x + rect.width / 2,
+            y: rect.y + rect.height / 2,
+            size: (rect.width + rect.height) / 2
+          });
+        }
+      }
+      cnt.delete();
+    }
+
+    if (candidates.length < 4) return null;
+
+    // Loại bỏ nhiễu: chỉ giữ các khối có kích thước gần với kích thước phổ biến nhất
+    const sizes = candidates.map(c => c.size).sort((a, b) => a - b);
+    const medianSize = sizes[Math.floor(sizes.length / 2)];
+    const filtered = candidates.filter(c => c.size > medianSize * 0.4 && c.size < medianSize * 2.5);
+    const pool = filtered.length >= 4 ? filtered : candidates;
+
+    // 4 ô vuông góc luôn là các điểm CỰC TRỊ (trên-trái, trên-phải, dưới-phải, dưới-trái)
+    const ordered = orderPoints(pool);
+
+    // Kiểm tra lại: diện tích đủ lớn + tỉ lệ khung gần A4 (loại các trường hợp trùng khớp ngẫu nhiên)
+    if (polygonArea(ordered) < frameArea * MIN_AREA_RATIO) return null;
+    if (!aspectRatioOk(ordered)) return null;
+
+    return ordered;
+  } finally {
+    [bin, contours, hierarchy].forEach(m => m && m.delete && m.delete());
+  }
+}
+
+function polygonArea(pts) {
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p1 = pts[i], p2 = pts[(i + 1) % pts.length];
+    area += p1.x * p2.y - p2.x * p1.y;
+  }
+  return Math.abs(area / 2);
 }
 
 // BƯỚC 16-18: chọn contour lớn nhất, xấp xỉ 4 góc, kiểm tra diện tích + tỉ lệ
