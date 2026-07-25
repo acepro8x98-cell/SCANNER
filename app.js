@@ -701,8 +701,11 @@ function showPreviewAndUpload(sbdCheck) {
     uploadStatusEl.className = 'upload-status error';
     feedbackWarning(); // "Tè tè" + rung cảnh báo
   } else {
+    // Quét/nhận diện thành công ngay tại đây -> phát "Tít" NGAY LẬP TỨC,
+    // không chờ upload lên Google Drive xong mới kêu
     uploadStatusEl.textContent = 'Đang tải lên Google Drive...';
     uploadStatusEl.className = 'upload-status';
+    feedbackSuccess(); // "Tít" + rung nhẹ báo thành công
   }
 
   uploadToDrive(dataUrl, sbdCheck);
@@ -736,7 +739,8 @@ async function uploadToDrive(dataUrl, sbdCheck) {
 
       uploadStatusEl.textContent = '✔ Đã lưu vào Google Drive';
       uploadStatusEl.className = 'upload-status success';
-      feedbackSuccess(); // "Tít" + rung nhẹ báo thành công
+      // (Âm thanh "Tít" đã phát ngay lúc quét xong ở showPreviewAndUpload(),
+      // không phát lại ở đây để tránh chờ mạng)
 
       // Tự động quay lại chế độ quét ngay sau khi lưu thành công,
       // để chụp phiếu tiếp theo mà không cần bấm "Chụp lại"
