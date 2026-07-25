@@ -483,11 +483,13 @@ function warpAndShow(fullCanvas, quadFull) {
     resultCanvas.height = OUT_H;
     cv.imshow(resultCanvas, dst);
 
-    // Kiểm tra ngay khối Số báo danh trên ảnh vừa duỗi thẳng
+    // Kiểm tra ngay các khối Số báo danh / Mã Đề / Phần I trên ảnh vừa duỗi thẳng
     const ctx2d = resultCanvas.getContext('2d');
     const sbdCheck = checkSBDGrid(ctx2d, OUT_W, OUT_H);
+    const madeCheck = checkMadeGrid(ctx2d, OUT_W, OUT_H);
+    const phan1Check = checkPhan1Grid(ctx2d, OUT_W, OUT_H);
 
-    showPreviewAndUpload(sbdCheck);
+    showPreviewAndUpload(sbdCheck, madeCheck, phan1Check);
   } finally {
     [src, dst, M, srcTri, dstTri].forEach(m => m && m.delete && m.delete());
     isBusy = false;
@@ -664,6 +666,62 @@ function checkSBDGrid(ctx, outW, outH) {
   };
 }
 
+// Kiểm tra khối Mã Đề: cấu trúc giống hệt Số báo danh (mỗi cột phải có
+// ĐÚNG 1 ô được tô), chỉ khác là có 3 cột thay vì 6.
+function checkMadeGrid(ctx, outW, outH) {
+  const darkness = readGridDarkness(ctx, OMR_TEMPLATE.made, outW, outH);
+  const errorCols = [];
+  let digits = [];
+
+  darkness.forEach((colVals, colIdx) => {
+    const filledRows = [];
+    colVals.forEach((d, rowIdx) => {
+      if (d >= OMR_TEMPLATE.fillThreshold) filledRows.push(rowIdx);
+    });
+    if (filledRows.length !== 1) {
+      errorCols.push(colIdx + 1);
+      digits.push('?');
+    } else {
+      digits.push(String(filledRows[0]));
+    }
+  });
+
+  return {
+    ok: errorCols.length === 0,
+    madeString: digits.join(''),
+    errorCols,
+    darkness
+  };
+}
+
+// Kiểm tra khối Phần I (20 câu trắc nghiệm, 4 đáp án A/B/C/D mỗi câu).
+// Khác với SBD/Mã Đề: ở đây mỗi HÀNG (câu hỏi) phải có đúng 1 CỘT (đáp án)
+// được tô. KHÔNG chặn upload nếu 1 câu bị bỏ trống hoặc tô nhầm 2 đáp án -
+// chỉ để trống ô đó trong bảng kết quả và đánh dấu lại để kiểm tra tay,
+// vì học sinh có quyền bỏ trống câu (khác với SBD/Mã Đề luôn phải có giá trị).
+const ANSWER_LETTERS = ['A', 'B', 'C', 'D'];
+function checkPhan1Grid(ctx, outW, outH) {
+  const darkness = readGridDarkness(ctx, OMR_TEMPLATE.phan1, outW, outH); // darkness[colIdx][rowIdx]
+  const numQuestions = OMR_TEMPLATE.phan1.rows.length;
+  const answers = [];
+  const ambiguousQuestions = []; // số thứ tự câu (1-based) bị bỏ trống hoặc tô >1 đáp án
+
+  for (let rowIdx = 0; rowIdx < numQuestions; rowIdx++) {
+    const filledCols = [];
+    darkness.forEach((colVals, colIdx) => {
+      if (colVals[rowIdx] >= OMR_TEMPLATE.fillThreshold) filledCols.push(colIdx);
+    });
+    if (filledCols.length === 1) {
+      answers.push(ANSWER_LETTERS[filledCols[0]]);
+    } else {
+      answers.push('');
+      ambiguousQuestions.push(rowIdx + 1);
+    }
+  }
+
+  return { answers, ambiguousQuestions, darkness };
+}
+
 // ============================================================
 // DEBUG: vẽ chấm màu tại từng điểm lấy mẫu để kiểm tra toạ độ có
 // đúng tâm ô tròn không (chỉ hiển thị trên preview, KHÔNG upload)
@@ -702,7 +760,7 @@ function drawDebugOverlay(sourceCanvas, gridDef, outW, outH, darkness) {
 }
 
 
-function showPreviewAndUpload(sbdCheck) {
+function showPreviewAndUpload(sbdCheck, madeCheck, phan1Check) {
   const dataUrl = resultCanvas.toDataURL('image/jpeg', 0.92); // ảnh SẠCH để upload
   previewBox.classList.remove('hidden');
 
@@ -726,16 +784,43 @@ function showPreviewAndUpload(sbdCheck) {
     return; // dừng lại đây, không gọi uploadToDrive
   }
 
+  if (madeCheck && !madeCheck.ok) {
+    // Mã Đề tô sai (thiếu hoặc thừa ô trong 1 cột nào đó) -> cũng chặn lại,
+    // vì thiếu Mã Đề sẽ không biết dùng đáp án đúng nào để chấm sau này.
+    uploadStatusEl.textContent =
+      '⚠ Mã Đề tô sai ở cột: ' + madeCheck.errorCols.join(', ') +
+      ' (mỗi cột phải tô đúng 1 ô). Ảnh này CHƯA được lưu lên Drive — ' +
+      'hãy kiểm tra lại phiếu giấy rồi bấm "Chụp lại".';
+    uploadStatusEl.className = 'upload-status error';
+    feedbackWarning();
+    return;
+  }
+
   // Quét/nhận diện thành công ngay tại đây -> phát "Tít" NGAY LẬP TỨC,
   // không chờ upload lên Google Drive xong mới kêu
   uploadStatusEl.textContent = 'Đang tải lên Google Drive...';
   uploadStatusEl.className = 'upload-status';
   feedbackSuccess(); // "Tít" + rung nhẹ báo thành công
 
-  uploadToDrive(dataUrl);
+  // Gói lại toàn bộ dữ liệu đã đọc được để gửi kèm ảnh lên Apps Script,
+  // Apps Script sẽ ghi thẳng vào Google Sheet, khớp dòng theo SBD.
+  const reading = {
+    sbd: sbdCheck.sbdString,
+    made: madeCheck.madeString,
+    answers: phan1Check.answers,               // mảng 20 phần tử: 'A'/'B'/'C'/'D' hoặc '' nếu bỏ trống/tô nhầm
+    ambiguousQuestions: phan1Check.ambiguousQuestions // câu cần người chấm kiểm tra tay
+  };
+
+  if (reading.ambiguousQuestions.length > 0) {
+    uploadStatusEl.textContent =
+      'Đang tải lên Google Drive... (câu ' + reading.ambiguousQuestions.join(', ') +
+      ' bỏ trống hoặc tô nhầm, cần kiểm tra tay)';
+  }
+
+  uploadToDrive(dataUrl, reading);
 }
 
-async function uploadToDrive(dataUrl) {
+async function uploadToDrive(dataUrl, reading) {
   const base64 = dataUrl.split(',')[1];
   const filename = 'phieu_' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
 
@@ -745,7 +830,7 @@ async function uploadToDrive(dataUrl) {
       // Dùng text/plain để tránh trình duyệt gửi preflight OPTIONS
       // (Apps Script Web App không xử lý OPTIONS mặc định)
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ filename, mimeType: 'image/jpeg', data: base64 })
+      body: JSON.stringify({ filename, mimeType: 'image/jpeg', data: base64, reading })
     });
 
     const result = await res.json();
