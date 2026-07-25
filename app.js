@@ -492,7 +492,11 @@ function warpAndShow(fullCanvas, quadFull) {
 // cho tới khi có cử chỉ chạm đầu tiên của người dùng -> "mở khoá" ở đây
 function unlockAudioOnce() {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  audioCtx.resume().then(() => {
+    audioUnlocked = true;
+    const hint = document.getElementById('audioHint');
+    if (hint) hint.remove();
+  });
   document.removeEventListener('touchstart', unlockAudioOnce);
   document.removeEventListener('click', unlockAudioOnce);
 }
@@ -525,10 +529,22 @@ retakeBtn.addEventListener('click', () => {
 // ÂM THANH PHẢN HỒI (giống máy quét mã vạch siêu thị)
 // ============================================================
 let audioCtx = null;
+let audioUnlocked = false;
 
 function playBeep(freq = 1200, durationMs = 120) {
   try {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    // QUAN TRỌNG: nếu AudioContext chưa được "mở khoá" bằng cử chỉ chạm của
+    // người dùng, trình duyệt sẽ GIỮ LẠI âm thanh và chỉ phát trễ vào lần
+    // chạm đầu tiên sau đó (gây cảm giác "kêu trễ", ví dụ kêu sau khi upload
+    // xong vì lúc đó người dùng mới chạm vào màn hình). Để tránh việc này,
+    // nếu chưa mở khoá thì bỏ qua không phát (chỉ rung), thay vì phát trễ.
+    if (!audioUnlocked || audioCtx.state === 'suspended') {
+      console.warn('Âm thanh chưa được mở khoá (cần chạm màn hình 1 lần) -> bỏ qua, chỉ rung.');
+      return;
+    }
+
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.type = 'sine';
