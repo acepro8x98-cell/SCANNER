@@ -23,12 +23,12 @@ const overlayCtx = overlay.getContext('2d');
 
 // ---------- Cấu hình thuật toán ----------
 const PROC_WIDTH        = 640;   // độ rộng ảnh xử lý (tăng lên để 4 ô vuông góc đủ lớn để nhận ra)
-const PROCESS_INTERVAL  = 90;    // ms giữa các lần xử lý (~11 khung hình/giây)
+const PROCESS_INTERVAL  = 70;    // ms giữa các lần xử lý (~14 khung hình/giây, tăng từ 90ms để phản hồi nhanh hơn)
 const MIN_AREA_RATIO    = 0.10;  // phiếu phải chiếm tối thiểu 10% diện tích khung hình
 const ASPECT_TARGETS    = [210/297, 297/210]; // A4 dọc và ngang
 const ASPECT_TOLERANCE  = 0.22;
-const STABLE_WINDOW_MS  = 600;   // thời gian phải đứng yên trước khi tự chụp
-const STABLE_PIXEL_TOL  = 8;     // sai lệch tối đa (px, ở độ phân giải xử lý) giữa các khung
+const STABLE_WINDOW_MS  = 350;   // thời gian phải đứng yên trước khi tự chụp (giảm từ 600ms để chụp nhanh hơn)
+const STABLE_PIXEL_TOL  = 14;    // sai lệch tối đa (px) giữa các khung (tăng từ 8 để chịu được tay rung nhẹ)
 const CAPTURE_COOLDOWN  = 2500;  // ms khoá lại sau khi vừa chụp, tránh chụp liên tục
 const OUT_W = 1240, OUT_H = 1754; // kích thước ảnh xuất ra (~A4 150dpi)
 
@@ -37,9 +37,9 @@ const OUT_W = 1240, OUT_H = 1754; // kích thước ảnh xuất ra (~A4 150dpi)
 // hơn nhiều so với việc dò viền cả tờ giấy (không bị ảnh hưởng bởi nền phía sau).
 const MARKER_MIN_SIDE_RATIO = 0.010; // cạnh ô vuông tối thiểu, tính theo % chiều rộng ảnh xử lý
 const MARKER_MAX_SIDE_RATIO = 0.10;  // cạnh ô vuông tối đa
-const MARKER_ASPECT_MIN     = 0.55;  // ô vuông thật sẽ có tỉ lệ cạnh gần 1:1
-const MARKER_ASPECT_MAX     = 1.8;
-const MARKER_MIN_EXTENT     = 0.80;  // độ "đặc" của khối - phân biệt ô vuông đặc với vòng tròn/chữ
+const MARKER_ASPECT_MIN     = 0.50;  // ô vuông thật sẽ có tỉ lệ cạnh gần 1:1 (nới ra để chịu mờ/nghiêng nhẹ)
+const MARKER_ASPECT_MAX     = 2.0;
+const MARKER_MIN_EXTENT     = 0.70;  // độ "đặc" của khối (giảm từ 0.80 để chịu ảnh hơi mờ làm mòn viền)
 
 // ---------- Biến trạng thái ----------
 let cvReady = false;
@@ -204,11 +204,17 @@ function processFrame() {
 // không bị ảnh hưởng bởi hoa văn của mặt bàn/sàn nhà phía sau phiếu)
 // ============================================================
 function findMarkerQuad(gray, frameArea) {
-  let bin, contours, hierarchy;
+  let bin, smoothed, contours, hierarchy;
   try {
+    // Làm mượt nhẹ trước khi nhị phân hoá: giúp thuật toán chịu được ảnh hơi
+    // rung/mờ (motion blur nhẹ, nhiễu hạt do thiếu sáng) mà vẫn giữ được cạnh
+    // ô vuông rõ ràng (median blur giữ cạnh tốt hơn Gaussian thông thường)
+    smoothed = new cv.Mat();
+    cv.medianBlur(gray, smoothed, 3);
+
     // Nhị phân hoá ảnh: vùng tối (chữ, ô vuông đen) -> trắng, còn lại -> đen
     bin = new cv.Mat();
-    cv.threshold(gray, bin, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+    cv.threshold(smoothed, bin, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
 
     contours = new cv.MatVector();
     hierarchy = new cv.Mat();
@@ -261,7 +267,7 @@ function findMarkerQuad(gray, frameArea) {
 
     return ordered;
   } finally {
-    [bin, contours, hierarchy].forEach(m => m && m.delete && m.delete());
+    [bin, smoothed, contours, hierarchy].forEach(m => m && m.delete && m.delete());
   }
 }
 
