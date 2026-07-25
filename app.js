@@ -715,28 +715,29 @@ function showPreviewAndUpload(sbdCheck) {
   }
 
   if (sbdCheck && !sbdCheck.ok) {
-    // Số báo danh tô sai (thiếu hoặc thừa ô trong 1 cột nào đó) -> cảnh báo ngay,
-    // không chờ upload xong, để người dùng dừng lại kiểm tra ngay lập tức
+    // Số báo danh tô sai (thiếu hoặc thừa ô trong 1 cột nào đó)
+    // -> KHÔNG upload lên Google Drive, chỉ cảnh báo và chờ người dùng xử lý
     uploadStatusEl.textContent =
       '⚠ Số báo danh tô sai ở cột: ' + sbdCheck.errorCols.join(', ') +
-      ' (mỗi cột phải tô đúng 1 ô) — Đang tải lên...';
+      ' (mỗi cột phải tô đúng 1 ô). Ảnh này CHƯA được lưu lên Drive — ' +
+      'hãy kiểm tra lại phiếu giấy rồi bấm "Chụp lại".';
     uploadStatusEl.className = 'upload-status error';
     feedbackWarning(); // "Tè tè" + rung cảnh báo
-  } else {
-    // Quét/nhận diện thành công ngay tại đây -> phát "Tít" NGAY LẬP TỨC,
-    // không chờ upload lên Google Drive xong mới kêu
-    uploadStatusEl.textContent = 'Đang tải lên Google Drive...';
-    uploadStatusEl.className = 'upload-status';
-    feedbackSuccess(); // "Tít" + rung nhẹ báo thành công
+    return; // dừng lại đây, không gọi uploadToDrive
   }
 
-  uploadToDrive(dataUrl, sbdCheck);
+  // Quét/nhận diện thành công ngay tại đây -> phát "Tít" NGAY LẬP TỨC,
+  // không chờ upload lên Google Drive xong mới kêu
+  uploadStatusEl.textContent = 'Đang tải lên Google Drive...';
+  uploadStatusEl.className = 'upload-status';
+  feedbackSuccess(); // "Tít" + rung nhẹ báo thành công
+
+  uploadToDrive(dataUrl);
 }
 
-async function uploadToDrive(dataUrl, sbdCheck) {
+async function uploadToDrive(dataUrl) {
   const base64 = dataUrl.split(',')[1];
   const filename = 'phieu_' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
-  const sbdError = sbdCheck && !sbdCheck.ok;
 
   try {
     const res = await fetch(WEBAPP_URL, {
@@ -749,16 +750,6 @@ async function uploadToDrive(dataUrl, sbdCheck) {
 
     const result = await res.json();
     if (result && result.success) {
-      if (sbdError) {
-        // Vẫn lưu ảnh (không mất dữ liệu), nhưng GIỮ màn hình preview để
-        // người dùng biết mà kiểm tra lại phiếu này -> không tự động chuyển bài
-        uploadStatusEl.textContent =
-          '⚠ Đã lưu ảnh, nhưng Số báo danh lỗi ở cột: ' + sbdCheck.errorCols.join(', ') +
-          '. Hãy kiểm tra lại phiếu giấy rồi bấm "Chụp lại" nếu cần.';
-        uploadStatusEl.className = 'upload-status error';
-        return; // dừng ở đây, không auto-advance
-      }
-
       uploadStatusEl.textContent = '✔ Đã lưu vào Google Drive';
       uploadStatusEl.className = 'upload-status success';
       // (Âm thanh "Tít" đã phát ngay lúc quét xong ở showPreviewAndUpload(),
