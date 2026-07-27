@@ -510,6 +510,19 @@ function unlockAudioOnce() {
     const hint = document.getElementById('audioHint');
     if (hint) hint.remove();
   });
+
+  // "Mở khoá" giọng đọc tiếng Việt NGAY TRONG lúc người dùng đang chạm/click.
+  // Một số trình duyệt di động chỉ cho phép speechSynthesis.speak() phát ra
+  // tiếng nếu lệnh speak() đầu tiên được gọi trực tiếp trong 1 cử chỉ chạm
+  // thật - nếu không, các lần gọi speakVN() sau này (từ vòng quét tự động,
+  // không phải từ 1 cú chạm) sẽ bị trình duyệt "nuốt" âm thầm, không báo lỗi.
+  if ('speechSynthesis' in window) {
+    const warmup = new SpeechSynthesisUtterance(' ');
+    warmup.volume = 0; // gần như câm, chỉ để "mở khoá" bộ máy đọc, không phát ra tiếng thật
+    window.speechSynthesis.speak(warmup);
+    speechUnlocked = true;
+  }
+
   document.removeEventListener('touchstart', unlockAudioOnce);
   document.removeEventListener('click', unlockAudioOnce);
 }
@@ -531,6 +544,16 @@ autoBtn.addEventListener('click', () => {
   autoBtn.textContent = 'Tự động: ' + (autoCaptureEnabled ? 'BẬT' : 'TẮT');
 });
 
+// Nút thử giọng nói - bấm trực tiếp để kiểm tra máy có đọc được tiếng
+// Việt hay không, tách biệt hoàn toàn khỏi luồng quét, dễ debug hơn.
+const testVoiceBtn = document.getElementById('testVoice');
+if (testVoiceBtn) {
+  testVoiceBtn.addEventListener('click', () => {
+    console.log('[testVoice] speechUnlocked =', speechUnlocked, '- vnVoice =', vnVoice);
+    speakVN('Thiếu. Sai. Trùng.');
+  });
+}
+
 retakeBtn.addEventListener('click', () => {
   previewBox.classList.add('hidden');
   history = [];
@@ -543,6 +566,23 @@ retakeBtn.addEventListener('click', () => {
 // ============================================================
 let audioCtx = null;
 let audioUnlocked = false;
+let speechUnlocked = false;
+let vnVoice = null; // giọng đọc tiếng Việt tìm được trên máy (nếu có)
+
+// Danh sách giọng đọc được nạp KHÔNG đồng bộ trên nhiều trình duyệt (đặc
+// biệt Chrome) - phải chờ sự kiện "voiceschanged" rồi mới tìm được giọng
+// vi-VN, gọi luôn 1 lần lúc tải trang phòng khi danh sách đã có sẵn.
+function loadVietnameseVoice() {
+  if (!('speechSynthesis' in window)) return;
+  const voices = window.speechSynthesis.getVoices();
+  vnVoice = voices.find(v => v.lang && v.lang.toLowerCase().startsWith('vi')) || null;
+  console.log('[speakVN] Số giọng đọc tìm thấy trên máy:', voices.length,
+    '- giọng tiếng Việt:', vnVoice ? (vnVoice.name + ' (' + vnVoice.lang + ')') : 'KHÔNG TÌM THẤY');
+}
+if ('speechSynthesis' in window) {
+  loadVietnameseVoice();
+  window.speechSynthesis.onvoiceschanged = loadVietnameseVoice;
+}
 
 function playBeep(freq = 1200, durationMs = 120) {
   try {
@@ -595,14 +635,29 @@ function feedbackWarning() {
 // ============================================================
 function speakVN(text) {
   try {
-    if (!('speechSynthesis' in window)) return; // trình duyệt không hỗ trợ -> bỏ qua, vẫn còn tiếng "Tè tè"
+    if (!('speechSynthesis' in window)) {
+      console.warn('[speakVN] Trình duyệt này không hỗ trợ đọc giọng nói (Web Speech API).');
+      return;
+    }
+    const synth = window.speechSynthesis;
+    if (!speechUnlocked) {
+      console.warn('[speakVN] Chưa "mở khoá" giọng đọc (cần chạm màn hình 1 lần) -> bỏ qua lần này:', text);
+      return;
+    }
+    // Chrome (đặc biệt trên Android) đôi khi bị "kẹt" ở trạng thái paused
+    // dù không ai gọi pause() - resume() trước mỗi lần đọc để chắc chắn.
+    synth.resume();
+
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'vi-VN';
+    if (vnVoice) utter.voice = vnVoice; // chỉ định đúng giọng Việt nếu máy có, tránh bị đọc giọng mặc định (thường là tiếng Anh) sai dấu
     utter.rate = 1;
+    utter.pitch = 1;
     utter.volume = 1;
-    window.speechSynthesis.speak(utter); // xếp hàng đọc, không cancel() câu trước để không mất tiếng khi 2 lỗi xảy ra liên tiếp
+    utter.onerror = (e) => console.warn('[speakVN] Lỗi khi đọc "' + text + '":', e.error);
+    synth.speak(utter);
   } catch (err) {
-    console.warn('Không đọc được cảnh báo bằng giọng nói:', err.message);
+    console.warn('[speakVN] Không đọc được cảnh báo bằng giọng nói:', err.message);
   }
 }
 
