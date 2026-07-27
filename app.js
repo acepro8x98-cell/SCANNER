@@ -53,6 +53,11 @@ let loopTimer = null;
 let isBusy = false;
 let lastMarkerDebug = { candidates: [] }; // để hiển thị debug: các ô vuông đang "nhìn thấy"
 
+// SBD đã quét THÀNH CÔNG trong phiên làm việc này (mất khi tải lại trang).
+// Dùng để cảnh báo ngay lúc quét nếu 2 phiếu khác nhau lại ra cùng 1 SBD
+// (khả năng cao là 1 trong 2 học sinh tô nhầm số báo danh).
+const scannedSBDs = new Set();
+
 // ============================================================
 // BƯỚC 1-3: MỞ CAMERA
 // ============================================================
@@ -796,11 +801,34 @@ function showPreviewAndUpload(sbdCheck, madeCheck, phan1Check) {
     return;
   }
 
+  // CẢNH BÁO TRÙNG SBD TRONG PHIÊN NÀY: nếu SBD này đã quét thành công
+  // trước đó rồi (khác với phiếu đang cầm trên tay hiện tại), rất có thể
+  // 1 trong 2 học sinh đã tô NHẦM số báo danh. Không có phiếu nào được
+  // coi là "chắc chắn đúng" chỉ vì quét trước - dừng lại hỏi ngay, vì
+  // đây là lúc dễ xử lý nhất (phiếu giấy vẫn đang ở trên tay).
+  if (scannedSBDs.has(sbdCheck.sbdString)) {
+    const overwrite = confirm(
+      '⚠ SBD ' + sbdCheck.sbdString + ' ĐÃ được quét trước đó trong phiên này!\n\n' +
+      'Bấm OK nếu đây là CHỤP LẠI phiếu vừa rồi (ảnh mờ/lỗi) - ghi đè bình thường.\n' +
+      'Bấm Huỷ nếu đây là phiếu của HỌC SINH KHÁC - hãy kiểm tra lại SBD với ' +
+      'học sinh trước khi quét tiếp (cả 2 phiếu sẽ được lưu vào tab "SBD trùng" ' +
+      'trên Google Sheet để đối chiếu và gán lại SBD đúng sau).'
+    );
+    if (!overwrite) {
+      uploadStatusEl.textContent =
+        '⛔ Đã huỷ upload - kiểm tra lại SBD với học sinh rồi quét lại phiếu này.';
+      uploadStatusEl.className = 'upload-status error';
+      feedbackWarning();
+      return;
+    }
+  }
+
   // Quét/nhận diện thành công ngay tại đây -> phát "Tít" NGAY LẬP TỨC,
   // không chờ upload lên Google Drive xong mới kêu
   uploadStatusEl.textContent = 'Đang tải lên Google Drive...';
   uploadStatusEl.className = 'upload-status';
   feedbackSuccess(); // "Tít" + rung nhẹ báo thành công
+  scannedSBDs.add(sbdCheck.sbdString); // ghi nhận SBD này đã quét trong phiên
 
   // Gói lại toàn bộ dữ liệu đã đọc được để gửi kèm ảnh lên Apps Script,
   // Apps Script sẽ ghi thẳng vào Google Sheet, khớp dòng theo SBD.
@@ -835,8 +863,21 @@ async function uploadToDrive(dataUrl, reading) {
 
     const result = await res.json();
     if (result && result.success) {
-      uploadStatusEl.textContent = '✔ Đã lưu vào Google Drive';
-      uploadStatusEl.className = 'upload-status success';
+      if (result.sheet && result.sheet.duplicate) {
+        // Server (Code.gs) phát hiện SBD này đã có dữ liệu từ trước (kể cả
+        // khi 2 điện thoại khác nhau cùng quét, hoặc quét cách nhau nhiều
+        // đợt - lớp bảo vệ này không phụ thuộc vào scannedSBDs của riêng
+        // trình duyệt này). Ảnh vẫn đã lưu vào Drive, chỉ là Sheet chính
+        // KHÔNG bị ghi đè - dữ liệu nằm ở tab "SBD trùng" chờ xử lý tay.
+        uploadStatusEl.textContent =
+          '⚠ Đã lưu ảnh, nhưng SBD ' + reading.sbd + ' TRÙNG với phiếu khác đã quét ' +
+          'trước đó (có thể từ máy khác) - xem tab "SBD trùng" trên Google Sheet ' +
+          'để đối chiếu và gán lại SBD đúng.';
+        uploadStatusEl.className = 'upload-status error';
+      } else {
+        uploadStatusEl.textContent = '✔ Đã lưu vào Google Drive';
+        uploadStatusEl.className = 'upload-status success';
+      }
       // (Âm thanh "Tít" đã phát ngay lúc quét xong ở showPreviewAndUpload(),
       // không phát lại ở đây để tránh chờ mạng)
 
