@@ -546,11 +546,38 @@ autoBtn.addEventListener('click', () => {
 
 // Nút thử giọng nói - bấm trực tiếp để kiểm tra máy có đọc được tiếng
 // Việt hay không, tách biệt hoàn toàn khỏi luồng quét, dễ debug hơn.
+// Bản thân việc bấm nút NÀY đã là 1 cử chỉ chạm hợp lệ -> tự mở khoá
+// luôn tại đây, không phụ thuộc vào việc đã chạm chỗ khác trước đó chưa.
 const testVoiceBtn = document.getElementById('testVoice');
 if (testVoiceBtn) {
   testVoiceBtn.addEventListener('click', () => {
-    console.log('[testVoice] speechUnlocked =', speechUnlocked, '- vnVoice =', vnVoice);
-    speakVN('Thiếu. Sai. Trùng.');
+    speechUnlocked = true; // cú bấm này chính là cử chỉ chạm -> mở khoá ngay
+
+    if (!('speechSynthesis' in window)) {
+      alert(
+        '⛔ Máy/trình duyệt này KHÔNG hỗ trợ đọc giọng nói (Web Speech API).\n\n' +
+        'Nếu đang mở trang này TỪ TRONG 1 app khác (Zalo, Messenger, Facebook, ' +
+        'Instagram...), hãy bấm "Mở bằng trình duyệt" / "Open in Chrome" ở góc ' +
+        'trên, rồi mở lại link này trực tiếp bằng Chrome.'
+      );
+      return;
+    }
+
+    const voices = window.speechSynthesis.getVoices();
+    alert(
+      'Thông tin kiểm tra:\n' +
+      '- Số giọng đọc máy có: ' + voices.length + '\n' +
+      '- Giọng tiếng Việt: ' + (vnVoice ? (vnVoice.name + ' (' + vnVoice.lang + ')') : 'KHÔNG TÌM THẤY') + '\n\n' +
+      (vnVoice
+        ? 'Sắp đọc thử - lắng nghe xem có tiếng không...'
+        : 'Máy chưa có giọng tiếng Việt cài sẵn - sẽ thử đọc bằng giọng mặc định ' +
+          '(có thể đọc sai dấu hoặc không phát ra tiếng gì). Nếu không nghe được ' +
+          'gì, cần cài thêm gói giọng tiếng Việt trong Cài đặt máy (xem hướng dẫn bên dưới).'
+      )
+    );
+
+    window.speechSynthesis.resume();
+    speakVN('Xin chào, đây là thử giọng nói tiếng Việt. Thiếu. Sai. Trùng.');
   });
 }
 
