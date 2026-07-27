@@ -39,6 +39,18 @@
     <button id="retake" class="btn btn-secondary">Chụp lại</button>
   </div>
 
+  <!-- Hộp thoại cảnh báo SBD trùng (tự vẽ, KHÔNG dùng confirm() của trình duyệt,
+       vì confirm() làm trình duyệt trên điện thoại cắt/treo âm thanh đang phát) -->
+  <div id="dupModal" class="dup-modal hidden">
+    <div class="dup-box">
+      <div id="dupMessage" class="dup-message"></div>
+      <div class="dup-actions">
+        <button id="dupCancelBtn" class="btn btn-secondary">Huỷ (phiếu học sinh khác)</button>
+        <button id="dupOverwriteBtn" class="btn btn-primary">Ghi đè (chụp lại phiếu này)</button>
+      </div>
+    </div>
+  </div>
+
   <!-- OpenCV.js chạy offline (file local trong dự án, không cần CDN) -->
   <script async src="opencv.js"></script>
   <script src="config.js"></script>
