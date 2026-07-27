@@ -807,6 +807,11 @@ function showPreviewAndUpload(sbdCheck, madeCheck, phan1Check) {
   // coi là "chắc chắn đúng" chỉ vì quét trước - dừng lại hỏi ngay, vì
   // đây là lúc dễ xử lý nhất (phiếu giấy vẫn đang ở trên tay).
   if (scannedSBDs.has(sbdCheck.sbdString)) {
+    // Phát cảnh báo âm thanh + rung NGAY LÚC PHÁT HIỆN TRÙNG, TRƯỚC KHI
+    // hiện hộp thoại confirm() - vì confirm() là hộp thoại chặn (blocking)
+    // của trình duyệt, nếu gọi feedbackWarning() sau nó thì tiếng "tè tè"
+    // sẽ bị trễ tới tận lúc người dùng bấm nút, mất tác dụng cảnh báo tức thời.
+    feedbackWarning();
     const overwrite = confirm(
       '⚠ SBD ' + sbdCheck.sbdString + ' ĐÃ được quét trước đó trong phiên này!\n\n' +
       'Bấm OK nếu đây là CHỤP LẠI phiếu vừa rồi (ảnh mờ/lỗi) - ghi đè bình thường.\n' +
@@ -818,7 +823,6 @@ function showPreviewAndUpload(sbdCheck, madeCheck, phan1Check) {
       uploadStatusEl.textContent =
         '⛔ Đã huỷ upload - kiểm tra lại SBD với học sinh rồi quét lại phiếu này.';
       uploadStatusEl.className = 'upload-status error';
-      feedbackWarning();
       return;
     }
   }
