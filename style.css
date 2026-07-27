@@ -137,3 +137,47 @@ html, body {
 
 .upload-status.success { color: #4ade80; }
 .upload-status.error { color: #f87171; }
+
+.dup-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.dup-modal.hidden {
+  display: none;
+}
+
+.dup-box {
+  background: #1c1c1e;
+  border: 1px solid rgba(248, 113, 113, 0.5);
+  border-radius: 14px;
+  padding: 22px;
+  max-width: 420px;
+  width: 100%;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+}
+
+.dup-message {
+  color: #fff;
+  font-size: 15px;
+  line-height: 1.5;
+  white-space: pre-line;
+  margin-bottom: 18px;
+}
+
+.dup-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dup-actions .btn {
+  width: 100%;
+  text-align: center;
+}
