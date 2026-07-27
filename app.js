@@ -586,6 +586,27 @@ function feedbackWarning() {
 }
 
 // ============================================================
+// ĐỌC CẢNH BÁO BẰNG GIỌNG NÓI TIẾNG VIỆT (Web Speech API), để phân
+// biệt rõ TỪNG LOẠI lỗi ở khối Số báo danh mà không cần nhìn màn hình:
+//   - "Thiếu" : có cột Số báo danh chưa tô ô nào
+//   - "Sai"   : có cột Số báo danh tô từ 2 ô trở lên
+//   - "Trùng" : Số báo danh này đã quét trước đó trong phiên này
+// Phát kèm với âm "Tè tè" hiện có (feedbackWarning), không thay thế.
+// ============================================================
+function speakVN(text) {
+  try {
+    if (!('speechSynthesis' in window)) return; // trình duyệt không hỗ trợ -> bỏ qua, vẫn còn tiếng "Tè tè"
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'vi-VN';
+    utter.rate = 1;
+    utter.volume = 1;
+    window.speechSynthesis.speak(utter); // xếp hàng đọc, không cancel() câu trước để không mất tiếng khi 2 lỗi xảy ra liên tiếp
+  } catch (err) {
+    console.warn('Không đọc được cảnh báo bằng giọng nói:', err.message);
+  }
+}
+
+// ============================================================
 // TOẠ ĐỘ CÁC Ô TRÒN TRÊN PHIẾU (đo từ file mẫu 132.docx, tính theo
 // tỉ lệ % so với khung ảnh đã duỗi thẳng - khớp với 4 marker góc,
 // nên áp dụng đúng cho MỌI kích thước OUT_W/OUT_H)
@@ -644,10 +665,14 @@ function readGridDarkness(ctx, gridDef, outW, outH) {
 }
 
 // Kiểm tra khối Số báo danh: mỗi cột (6 cột) phải có ĐÚNG 1 ô được tô.
-// Trả về { ok: boolean, sbdString: string|null, errorCols: number[] }
+// Trả về { ok, sbdString, errorCols, missingCols, extraCols }
+//   - missingCols: các cột CHƯA tô ô nào     (dùng để báo "Thiếu")
+//   - extraCols:   các cột tô TỪ 2 Ô TRỞ LÊN (dùng để báo "Sai")
 function checkSBDGrid(ctx, outW, outH) {
   const darkness = readGridDarkness(ctx, OMR_TEMPLATE.sbd, outW, outH);
   const errorCols = [];
+  const missingCols = [];
+  const extraCols = [];
   let sbdDigits = [];
 
   darkness.forEach((colVals, colIdx) => {
@@ -655,8 +680,13 @@ function checkSBDGrid(ctx, outW, outH) {
     colVals.forEach((d, rowIdx) => {
       if (d >= OMR_TEMPLATE.fillThreshold) filledRows.push(rowIdx);
     });
-    if (filledRows.length !== 1) {
-      errorCols.push(colIdx + 1); // lưu số thứ tự cột (1-6) cho dễ đọc thông báo
+    if (filledRows.length === 0) {
+      errorCols.push(colIdx + 1);
+      missingCols.push(colIdx + 1); // cột này chưa tô ô nào -> "Thiếu"
+      sbdDigits.push('?');
+    } else if (filledRows.length >= 2) {
+      errorCols.push(colIdx + 1);
+      extraCols.push(colIdx + 1); // cột này tô từ 2 ô trở lên -> "Sai"
       sbdDigits.push('?');
     } else {
       sbdDigits.push(String(filledRows[0])); // filledRows[0] chính là chữ số 0-9
@@ -667,6 +697,8 @@ function checkSBDGrid(ctx, outW, outH) {
     ok: errorCols.length === 0,
     sbdString: sbdDigits.join(''),
     errorCols,
+    missingCols,
+    extraCols,
     darkness
   };
 }
@@ -786,6 +818,10 @@ function showPreviewAndUpload(sbdCheck, madeCheck, phan1Check) {
       'hãy kiểm tra lại phiếu giấy rồi bấm "Chụp lại".';
     uploadStatusEl.className = 'upload-status error';
     feedbackWarning(); // "Tè tè" + rung cảnh báo
+    // Đọc rõ loại lỗi: "Thiếu" nếu có cột chưa tô ô nào, "Sai" nếu có cột
+    // tô từ 2 ô trở lên (đọc cả 2 nếu xảy ra đồng thời ở các cột khác nhau)
+    if (sbdCheck.missingCols.length > 0) speakVN('Thiếu');
+    if (sbdCheck.extraCols.length > 0) speakVN('Sai');
     return; // dừng lại đây, không gọi uploadToDrive
   }
 
@@ -807,6 +843,8 @@ function showPreviewAndUpload(sbdCheck, madeCheck, phan1Check) {
   // coi là "chắc chắn đúng" chỉ vì quét trước - dừng lại hỏi ngay, vì
   // đây là lúc dễ xử lý nhất (phiếu giấy vẫn đang ở trên tay).
   if (scannedSBDs.has(sbdCheck.sbdString)) {
+    feedbackWarning();
+    speakVN('Trùng'); // đọc ngay lúc phát hiện, trước khi hộp thoại confirm() hiện lên
     const overwrite = confirm(
       '⚠ SBD ' + sbdCheck.sbdString + ' ĐÃ được quét trước đó trong phiên này!\n\n' +
       'Bấm OK nếu đây là CHỤP LẠI phiếu vừa rồi (ảnh mờ/lỗi) - ghi đè bình thường.\n' +
@@ -818,7 +856,6 @@ function showPreviewAndUpload(sbdCheck, madeCheck, phan1Check) {
       uploadStatusEl.textContent =
         '⛔ Đã huỷ upload - kiểm tra lại SBD với học sinh rồi quét lại phiếu này.';
       uploadStatusEl.className = 'upload-status error';
-      feedbackWarning();
       return;
     }
   }
