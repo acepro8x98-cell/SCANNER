@@ -18,6 +18,10 @@ const previewBox  = document.getElementById('preview');
 const previewImg  = document.getElementById('previewImg');
 const uploadStatusEl = document.getElementById('uploadStatus');
 const retakeBtn   = document.getElementById('retake');
+const dupModal        = document.getElementById('dupModal');
+const dupMessageEl    = document.getElementById('dupMessage');
+const dupOverwriteBtn = document.getElementById('dupOverwriteBtn');
+const dupCancelBtn    = document.getElementById('dupCancelBtn');
 
 const overlayCtx = overlay.getContext('2d');
 
@@ -801,39 +805,6 @@ function showPreviewAndUpload(sbdCheck, madeCheck, phan1Check) {
     return;
   }
 
-  // CẢNH BÁO TRÙNG SBD TRONG PHIÊN NÀY: nếu SBD này đã quét thành công
-  // trước đó rồi (khác với phiếu đang cầm trên tay hiện tại), rất có thể
-  // 1 trong 2 học sinh đã tô NHẦM số báo danh. Không có phiếu nào được
-  // coi là "chắc chắn đúng" chỉ vì quét trước - dừng lại hỏi ngay, vì
-  // đây là lúc dễ xử lý nhất (phiếu giấy vẫn đang ở trên tay).
-  if (scannedSBDs.has(sbdCheck.sbdString)) {
-    // Phát cảnh báo âm thanh + rung NGAY LÚC PHÁT HIỆN TRÙNG, TRƯỚC KHI
-    // hiện hộp thoại confirm() - vì confirm() là hộp thoại chặn (blocking)
-    // của trình duyệt, nếu gọi feedbackWarning() sau nó thì tiếng "tè tè"
-    // sẽ bị trễ tới tận lúc người dùng bấm nút, mất tác dụng cảnh báo tức thời.
-    feedbackWarning();
-    const overwrite = confirm(
-      '⚠ SBD ' + sbdCheck.sbdString + ' ĐÃ được quét trước đó trong phiên này!\n\n' +
-      'Bấm OK nếu đây là CHỤP LẠI phiếu vừa rồi (ảnh mờ/lỗi) - ghi đè bình thường.\n' +
-      'Bấm Huỷ nếu đây là phiếu của HỌC SINH KHÁC - hãy kiểm tra lại SBD với ' +
-      'học sinh trước khi quét tiếp (cả 2 phiếu sẽ được lưu vào tab "SBD trùng" ' +
-      'trên Google Sheet để đối chiếu và gán lại SBD đúng sau).'
-    );
-    if (!overwrite) {
-      uploadStatusEl.textContent =
-        '⛔ Đã huỷ upload - kiểm tra lại SBD với học sinh rồi quét lại phiếu này.';
-      uploadStatusEl.className = 'upload-status error';
-      return;
-    }
-  }
-
-  // Quét/nhận diện thành công ngay tại đây -> phát "Tít" NGAY LẬP TỨC,
-  // không chờ upload lên Google Drive xong mới kêu
-  uploadStatusEl.textContent = 'Đang tải lên Google Drive...';
-  uploadStatusEl.className = 'upload-status';
-  feedbackSuccess(); // "Tít" + rung nhẹ báo thành công
-  scannedSBDs.add(sbdCheck.sbdString); // ghi nhận SBD này đã quét trong phiên
-
   // Gói lại toàn bộ dữ liệu đã đọc được để gửi kèm ảnh lên Apps Script,
   // Apps Script sẽ ghi thẳng vào Google Sheet, khớp dòng theo SBD.
   const reading = {
@@ -842,6 +813,65 @@ function showPreviewAndUpload(sbdCheck, madeCheck, phan1Check) {
     answers: phan1Check.answers,               // mảng 20 phần tử: 'A'/'B'/'C'/'D' hoặc '' nếu bỏ trống/tô nhầm
     ambiguousQuestions: phan1Check.ambiguousQuestions // câu cần người chấm kiểm tra tay
   };
+
+  // CẢNH BÁO TRÙNG SBD TRONG PHIÊN NÀY: nếu SBD này đã quét thành công
+  // trước đó rồi (khác với phiếu đang cầm trên tay hiện tại), rất có thể
+  // 1 trong 2 học sinh đã tô NHẦM số báo danh. Không có phiếu nào được
+  // coi là "chắc chắn đúng" chỉ vì quét trước - dừng lại hỏi ngay, vì
+  // đây là lúc dễ xử lý nhất (phiếu giấy vẫn đang ở trên tay).
+  //
+  // QUAN TRỌNG: KHÔNG dùng confirm() của trình duyệt ở đây - trên điện
+  // thoại, khi confirm() hiện lên, trình duyệt thường TREO/CẮT AudioContext
+  // đang phát, nên tiếng "tè tè" cảnh báo bị mất dù gọi feedbackWarning()
+  // trước đó. Dùng hộp thoại tự vẽ (dupModal) để âm thanh phát trọn vẹn.
+  if (scannedSBDs.has(sbdCheck.sbdString)) {
+    feedbackWarning(); // "Tè tè" + rung cảnh báo - phát NGAY, không bị hộp thoại nào cắt ngang
+    showDuplicateModal(
+      sbdCheck.sbdString,
+      () => finalizeUpload(dataUrl, sbdCheck, reading), // Ghi đè
+      () => {
+        uploadStatusEl.textContent =
+          '⛔ Đã huỷ upload - kiểm tra lại SBD với học sinh rồi quét lại phiếu này.';
+        uploadStatusEl.className = 'upload-status error';
+      }
+    );
+    return;
+  }
+
+  finalizeUpload(dataUrl, sbdCheck, reading);
+}
+
+// Hiện hộp thoại tự vẽ hỏi xác nhận SBD trùng (thay cho confirm() của
+// trình duyệt). onOverwrite/onCancel là callback ứng với 2 nút bấm.
+function showDuplicateModal(sbdString, onOverwrite, onCancel) {
+  dupMessageEl.textContent =
+    '⚠ SBD ' + sbdString + ' ĐÃ được quét trước đó trong phiên này!\n\n' +
+    'Bấm "Ghi đè" nếu đây là CHỤP LẠI phiếu vừa rồi (ảnh mờ/lỗi).\n' +
+    'Bấm "Huỷ" nếu đây là phiếu của HỌC SINH KHÁC - hãy kiểm tra lại SBD với ' +
+    'học sinh trước khi quét tiếp (cả 2 phiếu sẽ được lưu vào tab "SBD trùng" ' +
+    'trên Google Sheet để đối chiếu và gán lại SBD đúng sau).';
+  dupModal.classList.remove('hidden');
+
+  function cleanup() {
+    dupModal.classList.add('hidden');
+    dupOverwriteBtn.removeEventListener('click', handleOverwrite);
+    dupCancelBtn.removeEventListener('click', handleCancel);
+  }
+  function handleOverwrite() { cleanup(); onOverwrite(); }
+  function handleCancel() { cleanup(); onCancel(); }
+
+  dupOverwriteBtn.addEventListener('click', handleOverwrite);
+  dupCancelBtn.addEventListener('click', handleCancel);
+}
+
+// Hoàn tất: phát "Tít" thành công, đánh dấu SBD đã quét, rồi upload lên Drive/Sheet.
+function finalizeUpload(dataUrl, sbdCheck, reading) {
+  // Quét/nhận diện thành công ngay tại đây -> phát "Tít" NGAY LẬP TỨC,
+  // không chờ upload lên Google Drive xong mới kêu
+  uploadStatusEl.textContent = 'Đang tải lên Google Drive...';
+  uploadStatusEl.className = 'upload-status';
+  feedbackSuccess(); // "Tít" + rung nhẹ báo thành công
+  scannedSBDs.add(sbdCheck.sbdString); // ghi nhận SBD này đã quét trong phiên
 
   if (reading.ambiguousQuestions.length > 0) {
     uploadStatusEl.textContent =
