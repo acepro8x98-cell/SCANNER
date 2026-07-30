@@ -884,7 +884,12 @@ function finalizeUpload(dataUrl, sbdCheck, reading) {
 
 async function uploadToDrive(dataUrl, reading) {
   const base64 = dataUrl.split(',')[1];
-  const filename = 'phieu_' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg';
+  // Đặt tên file theo Số báo danh (SBD), bỏ các số 0 ở đầu để dễ đọc
+  // (vd SBD đọc được "000001" -> tên file "1.jpg"). Nếu trùng tên (chụp
+  // lại / trùng SBD), Code.gs sẽ tự thêm hậu tố "_2", "_3"... để KHÔNG
+  // ghi đè ảnh cũ, giữ lại tất cả các lần quét.
+  const sbdForFilename = (reading && reading.sbd ? String(reading.sbd) : 'unknown').replace(/^0+/, '') || '0';
+  const filename = sbdForFilename + '.jpg';
 
   try {
     const res = await fetch(WEBAPP_URL, {
